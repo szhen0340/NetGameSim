@@ -33,12 +33,12 @@ class NetGraphTest extends AnyFlatSpec with Matchers {
 
   it should "create a small net graph and then serialize and deserialize it" in {
     val graph: NetGraph = NetModelAlgebra().get
-    graph.persist(outputDirectory, "testGraph_2.ser")
-    FileUtils.getFile(outputDirectory + "testGraph_2.ser").exists() shouldEqual true
-    val graph2 = NetGraph.load("testGraph_2.ser", outputDirectory)
-    Try(FileUtils.forceDelete(FileUtils.getFile(outputDirectory + "testGraph_2.ser"))) match
+    graph.persist(outputDirectory, "testGraph_2.ngs")
+    FileUtils.getFile(outputDirectory + "testGraph_2.ngs").exists() shouldEqual true
+    val graph2 = NetGraph.load("testGraph_2.ngs", outputDirectory)
+    Try(FileUtils.forceDelete(FileUtils.getFile(outputDirectory + "testGraph_2.ngs"))) match
        case Failure(exception) =>
-         logger.warn(s"Cannot delete file ${outputDirectory + "testGraph_2.ser"}")
+         logger.warn(s"Cannot delete file ${outputDirectory + "testGraph_2.ngs"}")
        case Success(value) => logger.info(s"Deleted file ${outputDirectory + "testGraph_2.ser"}")
     if graph2.isEmpty then assert(true, "Serialized graph not loaded")
     else graph2.get shouldEqual graph

@@ -131,6 +131,101 @@ A typical accept/reject algorithm for simulation is based on the following simpl
 * The parameter ***graphWalkNodeTerminationProbability*** specifies the probability that a random walk can be terminated abruptly before the criteria in the parameter ***graphWalkTerminationPolicy*** is satisfied.
 * The parameter subspace ***CostRewards*** is ignored for now.
 
+MPI Distributed Algorithms Extension
+===
+
+This project extends NetGameSim with an MPI-based distributed runtime that runs leader election (FloodMax) and distributed Dijkstra shortest paths on generated graphs.
+
+### Prerequisites
+
+- **JDK 17+** (required for Scala 3; use `java -version` to check, set `JAVA_HOME` if needed)
+- **Scala 3.x**, **SBT** (for NetGameSim graph generation)
+- **MPI implementation** (OpenMPI or MPICH): install via `brew install open-mpi` (macOS) or `sudo apt install libopenmpi-dev` (Ubuntu)
+- **C++17 compiler** with MPI support (`mpic++`)
+- **jsoncpp** library: install via `brew install jsoncpp` (macOS) or `sudo apt install libjsoncpp-dev` (Ubuntu)
+
+### Project Layout
+
+```
+tools/graph_export/       C++ tool to load .ngs files, enrich with weights, export JSON
+mpi_runtime/              C++ MPI runtime with FloodMax and Dijkstra
+  include/                Headers: common.h, floodmax.h, dijkstra.h
+  src/                    Sources: runtime.cpp, partition.cpp, common.cpp
+  tests/                  Unit tests: test_runtime.cpp
+configs/                  Example run configurations
+outputs/                  Generated graphs, JSON exports, result files
+REPORT.md                 Experiment writeup
+REQUIREMENTS.md           Full project specification
+```
+
+### End-to-End Example
+
+```bash
+# 1) Generate a graph with NetGameSim (requires JDK 17+)
+# Check JDK: java -version (17 recommended for Scala 3)
+# Set JAVA_HOME if needed: export JAVA_HOME=/path/to/your/jdk
+sbt clean compile assembly
+
+mkdir -p outputs
+java -Xms2G -Xmx30G -jar target/scala-3.2.2/netmodelsim.jar
+
+# Find the generated graph file
+ls -t outputs/NetGraph_*.ngs | head -1
+
+# 2) Export and enrich the graph with weights
+cd tools/graph_export
+make
+cd ../..
+./tools/graph_export/graph_export outputs/NetGraph_*.ngs -o outputs/graph.json
+
+# 3) Build the MPI runtime
+cd mpi_runtime
+make
+cd ..
+
+# 4) Run leader election and Dijkstra (4 MPI ranks)
+mpirun -n 4 mpi_runtime/runtime outputs/graph.json -o outputs/results.txt
+
+# 5) View results
+cat outputs/results.txt
+```
+
+### Configuration
+
+Graph generation parameters are controlled via `GenericSimUtilities/src/main/resources/application.conf`. Override at runtime:
+
+```bash
+java -DNGSimulator.NetModel.statesTotal=500 -jar target/scala-3.2.2/netmodelsim.jar outputs/large
+```
+
+Runtime options for the MPI program:
+```
+mpiexec -n <ranks> ./runtime <graph.json> [options]
+  -o <output_file>    Output file for results (default: results.txt)
+  -s <source_node>    Source node ID for Dijkstra (default: auto-detect)
+  -i <max_iter>       Max Dijkstra iterations (default: 100)
+```
+
+### Running Tests
+
+```bash
+# Graph export unit tests (requires GRAPH_FILE to be set)
+cd tools/graph_export
+make test GRAPH_FILE=../../outputs/NetGraph_*.ngs
+
+# MPI runtime unit tests
+cd ../mpi_runtime
+make test-unit
+mpirun -n 1 ./test_runtime
+```
+
+### Correctness Assumptions
+
+1. **Positive weights**: Dijkstra requires non-negative edge weights (enforced by graph_export generating weights in [1.0, 20.0])
+2. **Connected graph**: Leader election and shortest paths are undefined across disconnected components (NetGameSim generates connected graphs via `desiredReachabilityCoverage = 1.0`)
+3. **Unique node IDs**: Graph export re-indexes nodes to sequential 0..N-1
+4. **Synchronous execution**: All MPI ranks must participate in each collective operation
+
 Maintenance notes
 ===
 This program is written and maintained by [Dr. Mark Grechanik](https://www.cs.uic.edu/~drmark/).

@@ -26,15 +26,12 @@ lazy val commonDependencies = Seq(
   "org.scala-lang.modules" %% "scala-parallel-collections" % scalaParCollVersion,
   "org.scalatest" %% "scalatest" % scalaTestVersion % Test,
   "org.scalatestplus" %% "mockito-4-2" % "3.2.12.0-RC2" % Test,
-  "io.circe" %% "circe-core" % "0.14.1",
-  "io.circe" %% "circe-generic" % "0.14.1",
-  "io.circe" %% "circe-parser" % "0.14.1",
-  "com.typesafe" % "config" % typeSafeConfigVersion,
-  "ch.qos.logback" % "logback-classic" % logbackVersion,
-  "net.bytebuddy" % "byte-buddy" % netBuddyVersion,
   "io.circe" %% "circe-core" % circeVersion,
   "io.circe" %% "circe-generic" % circeVersion,
-  "io.circe" %% "circe-parser" % circeVersion
+  "io.circe" %% "circe-parser" % circeVersion,
+  "com.typesafe" % "config" % typeSafeConfigVersion,
+  "ch.qos.logback" % "logback-classic" % logbackVersion,
+  "net.bytebuddy" % "byte-buddy" % netBuddyVersion
 ).map(_.exclude("org.slf4j", "*"))
 
 

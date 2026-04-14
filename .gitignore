@@ -146,3 +146,10 @@ target/task-temp-directory/
 
 # macOS
 .DS_Store
+
+# Project build artifacts
+outputs/
+mpi_runtime/obj/
+mpi_runtime/partition
+mpi_runtime/runtime
+tools/graph_export/graph_export
