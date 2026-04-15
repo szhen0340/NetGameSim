@@ -219,6 +219,7 @@ int main(int argc, char **argv) {
   }
 
   int parentRank = -1;
+  (void)parentRank;
   double myWeight = 0.0;
   for (int i = myStart; i < myStart + myCount; ++i) {
     if (i < g.numNodes) {
@@ -227,8 +228,8 @@ int main(int argc, char **argv) {
   }
   myWeight += (rank + 1) * 0.001;
 
-  FloodMax *fm =
-      runFloodMaxElection(rank, size, rank, myWeight, children, parentRank);
+  FloodMax *fm = runFloodMaxElection(rank, size, &g, rank, myWeight,
+                                     myStart, myCount);
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
   double electionTime = MPI_Wtime() - electionStart;
@@ -301,9 +302,13 @@ int main(int argc, char **argv) {
     for (const auto &r : localResults) {
       if (count++ >= 20)
         break;
-      out << std::setw(7) << r.nodeId << " | " << std::setw(8) << std::fixed
-          << std::setprecision(3) << r.distance << " | " << std::setw(11)
-          << r.predecessor << " | " << std::setw(4) << r.hopCount << "\n";
+      out << std::setw(7) << r.nodeId << " | ";
+      if (r.distance >= std::numeric_limits<double>::max() / 2) {
+          out << std::setw(8) << "INF" << " | ";
+      } else {
+          out << std::setw(8) << std::fixed << std::setprecision(3) << r.distance << " | ";
+      }
+      out << std::setw(11) << r.predecessor << " | " << std::setw(4) << r.hopCount << "\n";
     }
 
     out.close();

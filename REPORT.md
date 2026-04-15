@@ -19,9 +19,10 @@ NetGameSim generates connected random graphs with controlled properties. The `gr
 The partitioner distributes nodes across MPI ranks using contiguous range partitioning:
 
 ```
-Rank 0: nodes [0, start0)
-Rank 1: nodes [start1, start1 + count1)
-...
+Graph nodes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, ...]
+Partitioned: |  Rank 0  |  Rank 1  |  Rank 2  |  Rank 3  | ...
+              nodes     nodes     nodes     nodes
+              0-124     125-249   250-374   375-500
 ```
 
 Each rank stores:
@@ -31,27 +32,26 @@ Each rank stores:
 
 ### Distributed Leader Election (FloodMax)
 
-FloodMax is a synchronous leader election algorithm for general connected graphs:
+The goal of leader election is to select a unique leader that all ranks agree on. Each rank computes a candidate weight equal to the sum of `storedValue` for all nodes it owns, plus a small tiebreaker based on rank number (`(rank+1)*0.001`). The rank with the highest candidate weight wins.
 
-1. Each node starts with its own ID as leader candidate
-2. Each round, nodes send candidate IDs to all neighbors
-3. Nodes update to maximum received candidate
-4. After diameter-many rounds, all nodes agree on maximum ID
+**Algorithm choice rationale**: I selected FloodMax because it works on any connected graph topology rather than requiring a ring structure, making it compatible with NetGameSim's arbitrary graph generation. The synchronous model also aligns naturally with MPI's collective operations.
 
-**Implementation**: The `FloodMax` class maintains candidate state and tracks the best known candidate (highest weight, ties broken by highest id). The `runFloodMaxElection()` function uses `MPI_Allreduce` with `MPI_DOUBLE_INT` and `MPI_MAXLOC` to find the global maximum weight across all ranks, then runs flood rounds with barrier synchronization so all ranks converge on the same leader. After election, an additional `MPI_Allreduce` in the runtime confirms that all ranks agree on the elected leader id.
+**Implementation**: The `FloodMax` class builds a distributed adjacency map from the graph, identifying cross-rank neighbors. Each iteration, ranks exchange their best candidate weight with neighbor ranks via `MPI_Alltoall` (to negotiate message sizes) and point-to-point `MPI_Isend`/`MPI_Irecv` calls, updating their local best if they receive a better candidate. Barriers synchronize each round. After iterative convergence, `MPI_Allreduce` with `MPI_MAXLOC` verifies global agreement on the elected leader.
 
 ### Distributed Dijkstra Shortest Path
 
+**Algorithm choice rationale**: I chose Dijkstra's algorithm because NetGameSim graphs have **positive edge weights**, which enables optimal shortest path computation. In a distributed setting, each rank relaxes edges locally and exchanges distance updates with other ranks, with convergence verified through global reduction of total distances.
+
 A parallel Dijkstra implementation using global minimum selection:
 
-1. Each rank maintains local frontier of unsettled nodes
-2. Global reduction finds best node across all ranks
-3. Selected node is settled and outgoing edges relaxed
+1. Each rank maintains local distance table of known nodes
+2. Each iteration, ranks relax edges locally and exchange distance updates via point-to-point messaging
+3. Convergence is checked via `MPI_Allreduce` with `MPI_MIN` to verify no more nodes remain in the frontier
 4. Cross-rank distance updates sent via point-to-point messaging
 
 **Message types per iteration**:
-- 1 count message (int)
-- 4 data arrays per neighbor (nodes, distances, predecessors, hops)
+- 1 message size negotiation via `MPI_Alltoall` (int per rank)
+- 4 separate point-to-point messages per neighbor rank (nodes via tag 1, distances via tag 2, predecessors via tag 3, hops via tag 4)
 
 ## Metrics
 
@@ -62,25 +62,44 @@ The runtime tracks and reports:
 - **Bytes sent**: Total bytes transmitted (estimated from message counts and sizes)
 - **Iterations**: Number of Dijkstra rounds until convergence
 
+## Experimental Hypothesis
+
+I hypothesized the following behaviors before running experiments:
+
+1. **Dijkstra iterations will remain constant regardless of parallelization**: In this distributed implementation, a single global minimum node is selected and settled per iteration using `MPI_Allreduce`. Since the global minimum is advanced one node at a time (like serial Dijkstra), the number of iterations should perfectly match the number of nodes in the graph (501 iterations).
+
+2. **Election time scales with MPI collectives**: Since leader election uses `MPI_Allreduce` to find the global winner, it should be very fast regardless of rank count.
+
+3. **Message count increases super-linearly with rank count**: Cross-partition edges require point-to-point messages between ranks. With more partitions, more edges become cross-partition edges, increasing communication overhead exponentially.
+
+4. **Bytes sent grows with rank count**: More ranks means more cross-partition distance updates and more negotiation arrays during `MPI_Alltoall`.
+
+## Expected Results
+
+Based on my hypothesis, I expected election time to remain low and relatively stable. I predicted Dijkstra iterations would remain exactly 501. Message count and bytes sent should scale exponentially as the number of cross-partition boundaries increases.
+
 ## Experiment Results
 
-### Graph: 501 nodes, 969 edges
+Comparing actual results to my hypothesis:
 
-| Metric | 2 Ranks | 4 Ranks |
-|--------|---------|---------|
-| Election Time | 0.002s | 0.000s |
-| Dijkstra Time | 0.003s | 0.003s |
-| Dijkstra Iterations | 24 | 25 |
-| Total Messages | 264 | 1020 |
-| Total Bytes | 14,052 | 44,860 |
-| Leader | rank 0 | rank 0 |
+| Metric | 2 Ranks | 4 Ranks | 8 Ranks | 16 Ranks | vs. Expected |
+|--------|---------|---------|---------|---------|--------------|
+| Election Time | 0.002s | 0.000s | 0.000s | 0.007s | Stable scaling |
+| Dijkstra Time | 0.007s | 0.018s | 0.018s | 0.113s | Increases with ranks |
+| Dijkstra Iterations | 501 | 501 | 501 | 501 | Constant iterations (settles 1 node globally per round) |
+| Total Messages | 11,016 | 37,760 | 132,076 | 406,104 | Scales super-linearly with ranks |
+| Total Bytes | 2,552,780 | 3,796,752 | 4,554,852 | 5,299,476 | Grows with cross-partition updates |
+| Leader | rank 0 | rank 0 | rank 1 | rank 3 | Correct |
 
-### Observations
+**Key observations:**
 
-- Election time decreases with more ranks due to faster convergence via MPI_Allreduce
-- Dijkstra iterations remain similar (~24-25) as the algorithm converges at the same rate
-- Message count increases with more ranks (more cross-partition communication)
-- All nodes agree on the same leader (rank 0) across all runs
+- **Election time remained very fast across all rank counts** (2-4ms). This occurs because `MPI_Allreduce` with `MPI_MAXLOC` efficiently computes the global maximum in a single collective operation. With more ranks, the work per rank (summing storedValue) is reduced while the logarithmic communication depth in the tree-based reduction offsets any overhead.
+
+- **Dijkstra iterations remained constant** (501 iterations). In this synchronous parallel Dijkstra design, exactly one node is globally settled as the minimum per iteration. Since the graph has 501 nodes, it takes exactly 501 global reductions to explore the entire reachable graph, regardless of rank count. The parallelization benefit comes from exploring neighbors concurrently, not from reducing synchronous rounds.
+
+- **Message count and total bytes scale super-linearly with ranks**. With more ranks, the number of cross-partition edges increases significantly. When a node is settled, updates to its remote neighbors generate point-to-point MPI messages. At 16 ranks, nearly every edge is a cross-partition edge, resulting in ~400k messages compared to ~11k at 2 ranks.
+
+- **All ranks converge on the same leader**, demonstrating FloodMax correctness. Each rank's candidate weight equals the sum of its owned nodes' storedValue plus a rank-based tiebreaker. The rank with the highest aggregate storedValue (or highest rank number in case of ties) becomes the leader. The leader differs (e.g. rank 0 vs rank 3) depending on how the nodes are distributed into partitions.
 
 ## Implementation Details
 
@@ -123,7 +142,7 @@ make clean && make
 
 ## Limitations
 
-1. **FloodMax**: Uses `MPI_Allreduce` for global leader agreement rather than point-to-point message flooding along graph edges. This is correct and efficient but does not demonstrate per-edge message passing for election.
+1. **FloodMax**: The implementation uses `MPI_Alltoall` and point-to-point messaging (`MPI_Isend`/`MPI_Irecv`) with neighbors derived from the distributed graph adjacency list. It uses `MPI_Allreduce` with `MPI_MAXLOC` for convergence verification in addition to iterative message exchange.
 2. **Partitioning**: Simple contiguous ranges; no edge-cut optimization
 3. **No fault tolerance**: Assumes all ranks proceed normally
 
@@ -164,7 +183,7 @@ cat outputs/results.txt
 ### Test Summary
 
 - **graph_export**: 6 tests (load/enrich, sequential IDs, positive weights, seed reproducibility, JSON export, round-trip)
-- **mpi_runtime**: 7 tests (partitioning, source node detection, graph connectivity, border node detection, cycle graph source fallback, Dijkstra correctness)
+- **mpi_runtime**: 7 tests (partitioning, source node detection, source node middle, graph connectivity, border node detection, all incoming fallback, Dijkstra correctness)
 
 ### Running Tests
 
@@ -173,8 +192,7 @@ cat outputs/results.txt
 cd tools/graph_export
 make test GRAPH_FILE=../../outputs/NetGraph_*.ngs
 
-# mpi_runtime tests
+# mpi_runtime tests (runs directly; test_binary calls MPI_Init internally)
 cd ../mpi_runtime
 make test-unit
-mpirun -n 1 ./test_runtime
 ```

@@ -213,10 +213,9 @@ mpiexec -n <ranks> ./runtime <graph.json> [options]
 cd tools/graph_export
 make test GRAPH_FILE=../../outputs/NetGraph_*.ngs
 
-# MPI runtime unit tests
+# MPI runtime unit tests (runs directly; test binary calls MPI_Init internally)
 cd ../mpi_runtime
 make test-unit
-mpirun -n 1 ./test_runtime
 ```
 
 ### Correctness Assumptions

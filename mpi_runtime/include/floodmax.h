@@ -4,6 +4,9 @@
 #include "common.h"
 #include <iostream>
 #include <mpi.h>
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 struct FloodMaxMessage {
@@ -18,113 +21,203 @@ struct FloodMaxMessage {
 
 class FloodMax {
 private:
+  int rank;
   int size;
-  int leaderId;
-  double leaderWeight;
+  int myNodeId;
+  double myNodeWeight;
   int currentRound;
   bool leaderElected;
-  std::vector<int> children;
-  int parent;
+  int leaderId;
+  double leaderWeight;
+
+  int localNodeStart;
+  int localNodeEnd;
+  const Graph *graph;
 
   int bestCandidateId;
   double bestCandidateWeight;
 
+  std::unordered_map<int, std::vector<int>> adjList;
+  std::unordered_map<int, std::unordered_set<int>> neighborRanks;
+
+  std::unordered_map<int, int> candidateVotes;
+  int noChangeCount;
+
 public:
-  FloodMax(int r, int s, int id, double weight);
+  FloodMax(int r, int s, const Graph *g, int id, double weight, int start,
+           int count);
   ~FloodMax() = default;
 
-  void addChild(int childRank);
-  void setParent(int p);
-  bool electionStep(std::vector<FloodMaxMessage> &outgoing);
-  void receiveMessage(const FloodMaxMessage &msg);
+  void buildAdjacencyMap();
+  void sendCandidateToNeighbors();
+  void receiveAndUpdateCandidates();
+  bool hasConverged();
+  bool runElection(int maxRounds = 100);
+
   int getLeader() const { return leaderId; }
   double getLeaderWeight() const { return leaderWeight; }
   bool isLeaderElected() const { return leaderElected; }
   int getRound() const { return currentRound; }
-  int getParent() const { return parent; }
-  const std::vector<int> &getChildren() const { return children; }
+  long long getMessageCount() const { return messageCount; }
+  long long getBytesSent() const { return bytesSent; }
+
+  long long messageCount;
+  long long bytesSent;
 };
 
-FloodMax::FloodMax(int r, int s, int id, double weight)
-    : size(s), leaderId(-1), leaderWeight(0.0), currentRound(0),
-      leaderElected(false), parent(-1), bestCandidateId(id),
-      bestCandidateWeight(weight) {}
+FloodMax::FloodMax(int r, int s, const Graph *g, int id, double weight,
+                    int start, int count)
+    : rank(r), size(s), myNodeId(id), myNodeWeight(weight),
+      currentRound(0), leaderElected(false), leaderId(-1), leaderWeight(0.0),
+      localNodeStart(start), localNodeEnd(start + count), graph(g),
+      bestCandidateId(id), bestCandidateWeight(weight), noChangeCount(0),
+      messageCount(0), bytesSent(0) {}
 
-void FloodMax::addChild(int childRank) { children.push_back(childRank); }
+void FloodMax::buildAdjacencyMap() {
+  for (const auto &entry : graph->adjList) {
+    int nodeId = entry.first;
+    if (nodeId < localNodeStart || nodeId >= localNodeEnd)
+      continue;
 
-void FloodMax::setParent(int p) { parent = p; }
+    adjList[nodeId] = entry.second;
 
-void FloodMax::receiveMessage(const FloodMaxMessage &msg) {
-  if (msg.candidateWeight > bestCandidateWeight ||
-      (msg.candidateWeight == bestCandidateWeight &&
-       msg.candidateId > bestCandidateId)) {
-    bestCandidateId = msg.candidateId;
-    bestCandidateWeight = msg.candidateWeight;
+    for (int neighbor : entry.second) {
+      int neighborRank = -1;
+      for (int p = 0; p < size; ++p) {
+        int pStart = (graph->numNodes / size) * p +
+                     std::min(p, graph->numNodes % size);
+        int pCount = (graph->numNodes / size) +
+                     (p < graph->numNodes % size ? 1 : 0);
+        if (neighbor >= pStart && neighbor < pStart + pCount) {
+          neighborRank = p;
+          break;
+        }
+      }
+      if (neighborRank != -1 && neighborRank != rank) {
+        neighborRanks[nodeId].insert(neighborRank);
+      }
+    }
   }
 }
 
-bool FloodMax::electionStep(std::vector<FloodMaxMessage> &outgoing) {
-  outgoing.clear();
+void FloodMax::sendCandidateToNeighbors() {
+  std::vector<std::vector<FloodMaxMessage>> sendBuffers(size);
+  std::vector<std::vector<FloodMaxMessage>> recvBuffers(size);
 
-  if (leaderElected) {
-    return true;
+  for (const auto &entry : adjList) {
+    int nodeId = entry.first;
+
+    for (int neighborRank : neighborRanks[nodeId]) {
+      sendBuffers[neighborRank].push_back(
+          FloodMaxMessage(currentRound, bestCandidateId, bestCandidateWeight));
+    }
   }
 
-  ++currentRound;
-
-  outgoing.emplace_back(currentRound, bestCandidateId, bestCandidateWeight);
-
-  int maxRounds = size * 2;
-  if (currentRound >= maxRounds) {
-    leaderElected = true;
-    leaderId = bestCandidateId;
-    leaderWeight = bestCandidateWeight;
+  std::vector<int> sendCounts(size, 0);
+  for (int p = 0; p < size; ++p) {
+    sendCounts[p] = sendBuffers[p].size();
   }
 
-  return leaderElected;
+  std::vector<int> recvCounts(size, 0);
+  MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvCounts.data(), 1, MPI_INT,
+               MPI_COMM_WORLD);
+  messageCount += 2;
+  bytesSent += size * sizeof(int);
+
+  std::vector<MPI_Request> reqs;
+
+  for (int p = 0; p < size; ++p) {
+    if (p == rank || sendCounts[p] == 0)
+      continue;
+    MPI_Request req;
+    MPI_Isend(sendBuffers[p].data(), sendCounts[p] * sizeof(FloodMaxMessage),
+              MPI_BYTE, p, 1, MPI_COMM_WORLD, &req);
+    reqs.push_back(req);
+    messageCount++;
+    bytesSent += sendCounts[p] * sizeof(FloodMaxMessage);
+  }
+
+  for (int p = 0; p < size; ++p) {
+    if (p == rank || recvCounts[p] == 0)
+      continue;
+    recvBuffers[p].resize(recvCounts[p]);
+    MPI_Request req;
+    MPI_Irecv(recvBuffers[p].data(), recvCounts[p] * sizeof(FloodMaxMessage),
+              MPI_BYTE, p, 1, MPI_COMM_WORLD, &req);
+    reqs.push_back(req);
+  }
+
+  if (!reqs.empty()) {
+    MPI_Waitall(reqs.size(), reqs.data(), MPI_STATUSES_IGNORE);
+  }
+
+  for (int p = 0; p < size; ++p) {
+    for (const auto &msg : recvBuffers[p]) {
+      if (msg.candidateWeight > bestCandidateWeight ||
+          (msg.candidateWeight == bestCandidateWeight &&
+           msg.candidateId > bestCandidateId)) {
+        bestCandidateId = msg.candidateId;
+        bestCandidateWeight = msg.candidateWeight;
+      }
+    }
+  }
 }
 
-FloodMax *runFloodMaxElection(int rank, int size, int myNodeId,
-                              double myNodeWeight,
-                              const std::vector<int> &children, int parent) {
-  FloodMax *fm = new FloodMax(rank, size, myNodeId, myNodeWeight);
-
-  for (int child : children) {
-    fm->addChild(child);
-  }
-  if (parent >= 0) {
-    fm->setParent(parent);
-  }
-
+bool FloodMax::hasConverged() {
   struct {
     double weight;
     int id;
   } local, global;
 
-  local.weight = myNodeWeight;
-  local.id = myNodeId;
+  local.weight = bestCandidateWeight;
+  local.id = bestCandidateId;
 
-  MPI_Allreduce(&local, &global, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+  MPI_Allreduce(&local, &global, 1, MPI_DOUBLE_INT, MPI_MAXLOC,
+                MPI_COMM_WORLD);
+  messageCount++;
+  bytesSent += sizeof(double) + sizeof(int);
 
-  std::vector<FloodMaxMessage> outgoing;
-  int iterations = 0;
-  const int maxIterations = size * 2;
+  int localConverged = (global.weight == bestCandidateWeight && global.id == bestCandidateId) ? 1 : 0;
+  int allConverged = 0;
+  MPI_Allreduce(&localConverged, &allConverged, 1, MPI_INT, MPI_LAND,
+                MPI_COMM_WORLD);
+  messageCount++;
+  bytesSent += sizeof(int);
 
-  while (!fm->isLeaderElected() && iterations < maxIterations) {
-    fm->electionStep(outgoing);
+  return allConverged == 1;
+}
 
-    FloodMaxMessage bestMsg(iterations + 1, global.id, global.weight);
-    fm->receiveMessage(bestMsg);
+bool FloodMax::runElection(int maxRounds) {
+  buildAdjacencyMap();
 
-    ++iterations;
+  for (currentRound = 1; currentRound <= maxRounds; ++currentRound) {
+    MPI_Barrier(MPI_COMM_WORLD);
 
-    if (fm->isLeaderElected()) {
-      break;
-    }
+    sendCandidateToNeighbors();
 
     MPI_Barrier(MPI_COMM_WORLD);
+
+    if (hasConverged()) {
+      leaderElected = true;
+      leaderId = bestCandidateId;
+      leaderWeight = bestCandidateWeight;
+      return true;
+    }
   }
 
+  leaderElected = true;
+  leaderId = bestCandidateId;
+  leaderWeight = bestCandidateWeight;
+  return true;
+}
+
+FloodMax *runFloodMaxElection(int rank, int size, const Graph *graph,
+                               int myNodeId, double myNodeWeight,
+                               int localStart, int localCount) {
+  FloodMax *fm =
+      new FloodMax(rank, size, graph, myNodeId, myNodeWeight, localStart,
+                   localCount);
+  fm->runElection(size * 2);
   return fm;
 }
 
