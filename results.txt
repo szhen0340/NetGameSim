@@ -1,0 +1,35 @@
+NetGameSim Distributed Dijkstra Results
+======================================
+Graph: 501 nodes, 967 edges
+Source node: 500
+Partitions: 2
+Leader elected: rank 0
+Election time: 0.002s
+Dijkstra time: 0.006s
+Dijkstra iterations: 501
+Total messages sent: 11008
+Total bytes sent: 2611720
+
+Sample distances (first 20 nodes):
+Node ID | Distance | Predecessor | Hops
+--------|----------|-------------|-----
+      0 |   93.837 |         302 |   11
+      1 |   20.239 |         109 |    3
+      2 |   71.709 |         441 |    8
+      3 |  120.762 |         180 |   12
+      4 |   92.327 |         298 |   12
+      5 |  110.538 |          89 |   11
+      6 |  105.367 |         480 |   11
+      7 |  143.289 |         156 |   13
+      8 |   97.873 |         301 |    9
+      9 |  102.497 |         161 |   10
+     10 |   86.098 |         353 |   10
+     11 |  119.755 |         453 |    9
+     12 |  130.836 |          32 |   11
+     13 |   96.382 |         426 |    9
+     14 |  147.358 |         165 |   12
+     15 |  104.201 |         149 |   11
+     16 |  105.483 |           8 |   10
+     17 |  140.390 |         464 |   14
+     18 |  111.322 |         435 |   11
+     19 |  122.933 |         207 |   11

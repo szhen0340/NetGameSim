@@ -198,28 +198,6 @@ int main(int argc, char **argv) {
 
   double electionStart = MPI_Wtime();
 
-  std::vector<int> children;
-  for (int i = 0; i < g.numNodes; ++i) {
-    if (partitionAssignment[i] == rank) {
-      for (const auto &e : g.edges) {
-        if (e.fromNodeId == i && partitionAssignment[e.toNodeId] != rank) {
-          bool found = false;
-          for (int c : children) {
-            if (c == partitionAssignment[e.toNodeId]) {
-              found = true;
-              break;
-            }
-          }
-          if (!found && partitionAssignment[e.toNodeId] > rank) {
-            children.push_back(partitionAssignment[e.toNodeId]);
-          }
-        }
-      }
-    }
-  }
-
-  int parentRank = -1;
-  (void)parentRank;
   double myWeight = 0.0;
   for (int i = myStart; i < myStart + myCount; ++i) {
     if (i < g.numNodes) {

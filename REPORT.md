@@ -20,9 +20,9 @@ The partitioner distributes nodes across MPI ranks using contiguous range partit
 
 ```
 Graph nodes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, ...]
-Partitioned: |  Rank 0  |  Rank 1  |  Rank 2  |  Rank 3  | ...
-              nodes     nodes     nodes     nodes
-              0-124     125-249   250-374   375-500
+Partitions:  |  Rank 0  |  Rank 1  |  Rank 2  |  Rank 3  |
+             nodes     nodes     nodes     nodes
+             0-125    126-250   251-375   376-500
 ```
 
 Each rank stores:
@@ -32,7 +32,7 @@ Each rank stores:
 
 ### Distributed Leader Election (FloodMax)
 
-The goal of leader election is to select a unique leader that all ranks agree on. Each rank computes a candidate weight equal to the sum of `storedValue` for all nodes it owns, plus a small tiebreaker based on rank number (`(rank+1)*0.001`). The rank with the highest candidate weight wins.
+The goal of leader election is to select a unique rank that all ranks agree on. Each rank computes a candidate weight equal to the sum of `storedValue` for all nodes it owns, plus a small tiebreaker based on rank number (`(rank+1)*0.001`). The rank with the highest candidate weight wins. Note that the "leader" elected is the MPI rank number itself, not a graph node ID.
 
 **Algorithm choice rationale**: I selected FloodMax because it works on any connected graph topology rather than requiring a ring structure, making it compatible with NetGameSim's arbitrary graph generation. The synchronous model also aligns naturally with MPI's collective operations.
 
@@ -50,6 +50,9 @@ A parallel Dijkstra implementation using global minimum selection:
 4. Cross-rank distance updates sent via point-to-point messaging
 
 **Message types per iteration**:
+- 1 `MPI_Allreduce` (MINLOC) to find global minimum node
+- 1 `MPI_Allreduce` (MAX) to determine which rank owns the settled node
+- 3 `MPI_Bcast` calls to broadcast settled node info (node ID, distance, hops)
 - 1 message size negotiation via `MPI_Alltoall` (int per rank)
 - 4 separate point-to-point messages per neighbor rank (nodes via tag 1, distances via tag 2, predecessors via tag 3, hops via tag 4)
 
@@ -99,7 +102,7 @@ Comparing actual results to my hypothesis:
 
 - **Message count and total bytes scale super-linearly with ranks**. With more ranks, the number of cross-partition edges increases significantly. When a node is settled, updates to its remote neighbors generate point-to-point MPI messages. At 16 ranks, nearly every edge is a cross-partition edge, resulting in ~400k messages compared to ~11k at 2 ranks.
 
-- **All ranks converge on the same leader**, demonstrating FloodMax correctness. Each rank's candidate weight equals the sum of its owned nodes' storedValue plus a rank-based tiebreaker. The rank with the highest aggregate storedValue (or highest rank number in case of ties) becomes the leader. The leader differs (e.g. rank 0 vs rank 3) depending on how the nodes are distributed into partitions.
+- **All ranks converge on the same leader** (an MPI rank number), demonstrating FloodMax correctness. Each rank's candidate weight equals the sum of its owned nodes' storedValue plus a rank-based tiebreaker. The rank with the highest aggregate storedValue (or highest rank number in case of ties) becomes the leader.
 
 ## Implementation Details
 
